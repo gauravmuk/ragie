@@ -1,6 +1,9 @@
-import "dotenv/config";
+if (!process.env.VERCEL) {
+  await import("dotenv/config");
+}
 import { SupabaseVectorStore } from "@langchain/community/vectorstores/supabase";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { ChatGroq } from "@langchain/groq";
 import { GeminiEmbeddings } from "./gemini-embeddings.js";
 import { Document } from "@langchain/core/documents";
 import { makeSupabaseClient } from "./supabase-client.js";
@@ -12,7 +15,26 @@ import facetConfigJson from "./facet-config.json" with { type: "json" };
 
 const TABLE_NAME = "documents";
 const QUERY_NAME = "match_documents";
-const CHAT_MODEL = process.env.GEMINI_CHAT_MODEL || "gemini-2.0-flash";
+const CHAT_PROVIDER = process.env.CHAT_PROVIDER || "groq";
+const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+const GEMINI_CHAT_MODEL = process.env.GEMINI_CHAT_MODEL || "gemini-2.0-flash";
+const CHAT_MODEL = CHAT_PROVIDER === "groq" ? GROQ_MODEL : GEMINI_CHAT_MODEL;
+
+function makeChatLlm({ model, temperature = 0 } = {}) {
+  const m = model || CHAT_MODEL;
+  if (CHAT_PROVIDER === "groq") {
+    return new ChatGroq({
+      apiKey: process.env.GROQ_API_KEY,
+      model: m,
+      temperature,
+    });
+  }
+  return new ChatGoogleGenerativeAI({
+    apiKey: process.env.GEMINI_API_KEY,
+    model: m,
+    temperature,
+  });
+}
 const TOP_K = Number(process.env.RAG_TOP_K || 5);
 const CANDIDATE_K = Number(process.env.RAG_CANDIDATE_K || Math.max(TOP_K * 4, 20));
 const PARENT_CONTEXT_LIMIT = Number(process.env.RAG_PARENT_CONTEXT_LIMIT || 3);
@@ -233,11 +255,7 @@ async function resolveRequestedFacet(question, facetConfig, chatModel) {
 
   try {
     const routerModel = process.env.RAG_ROUTER_MODEL || chatModel;
-    const routerLlm = new ChatGoogleGenerativeAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      model: routerModel,
-      temperature: 0,
-    });
+    const routerLlm = makeChatLlm({ model: routerModel, temperature: 0 });
     const routed = await routeFacetWithLlm(question, facetConfig, routerLlm);
     if (routed.confidence >= minConf) {
       return { ...routed, source: "llm" };
@@ -585,11 +603,7 @@ export async function querySystem(
   }
 
   const context = formatContext(docs, parentDocs);
-  const llm = new ChatGoogleGenerativeAI({
-    apiKey: process.env.GEMINI_API_KEY,
-    model: chatModel,
-    temperature,
-  });
+  const llm = makeChatLlm({ model: chatModel, temperature });
 
   const prompt = [
     "You are a support assistant for JustCall docs.",

@@ -23,6 +23,7 @@
     "@langchain/community": "^1.1.24",
     "@langchain/core": "^1.1.35",
     "@langchain/google-genai": "^2.1.26",
+    "@langchain/groq": "^1.1.5",
     "@langchain/textsplitters": "^1.0.1",
     "@supabase/supabase-js": "^2.99.3",
     "better-sqlite3": "^12.8.0",
