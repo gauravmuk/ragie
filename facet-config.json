@@ -1,0 +1,36 @@
+{
+  "defaultFacet": "core",
+  "router": {
+    "confidenceMin": 0.45
+  },
+  "scoring": {
+    "matchBoost": 0.22,
+    "mismatchPenalty": -0.55,
+    "defaultFacetMatchBoost": 0.12,
+    "defaultFacetMismatchPenalty": -0.08
+  },
+  "facets": [
+    {
+      "id": "email",
+      "description": "The separate email / shared-inbox product: JustCall Email, inbox integrations, email automation, mailbox, SMTP/IMAP, campaigns in the email workspace.",
+      "queryHints": [
+        "justcall email",
+        "shared inbox",
+        "email inbox",
+        "smtp",
+        "imap",
+        "mailbox",
+        "mailboxes",
+        "email automation"
+      ],
+      "docMatch": {
+        "sourceContains": ["justcall-email", "justcall_email"],
+        "titleContains": ["justcall email", "shared inbox", "your shared inbox"]
+      }
+    },
+    {
+      "id": "core",
+      "description": "The main product: phone system, dialer, SMS, phone numbers, VoIP, calling, and CRM integrations in the primary JustCall app (not the email inbox product)."
+    }
+  ]
+}

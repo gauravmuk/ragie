@@ -1,0 +1,18 @@
+[
+  {
+    "id": "core-routing",
+    "question": "How do I assign a JustCall number to a team member?",
+    "expectedFacet": "core"
+  },
+  {
+    "id": "email-routing",
+    "question": "How do I set up JustCall Email inbox and automation?",
+    "expectedFacet": "email"
+  },
+  {
+    "id": "workflow-question",
+    "question": "What are the steps to set up call forwarding?",
+    "expectedFacet": "core",
+    "answerMustIncludeAny": ["step", "setting", "forward"]
+  }
+]

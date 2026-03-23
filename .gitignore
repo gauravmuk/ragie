@@ -1,0 +1,12 @@
+node_modules
+.env
+.env*.local
+.env.production
+*.db
+*.db-wal
+*.db-shm
+progress.json
+progress.json.migrated
+.mcp.json
+.next
+out

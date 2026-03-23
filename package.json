@@ -1,0 +1,45 @@
+{
+  "name": "ragas",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "ingest": "node ingest.js",
+    "ingest:reset": "node ingest.js --reset --reset-only",
+    "ingest:reset-and-run": "node ingest.js --reset",
+    "query": "node query.js",
+    "eval": "node evals.js",
+    "eval:strict": "node evals.js --strict",
+    "test": "node evals.js --strict"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@langchain/community": "^1.1.24",
+    "@langchain/core": "^1.1.35",
+    "@langchain/google-genai": "^2.1.26",
+    "@langchain/textsplitters": "^1.0.1",
+    "@supabase/supabase-js": "^2.99.3",
+    "better-sqlite3": "^12.8.0",
+    "cheerio": "^1.2.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "dotenv": "^16.4.5",
+    "lucide-react": "^0.468.0",
+    "next": "^15.1.0",
+    "p-limit": "^7.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^2.6.0",
+    "tailwindcss-animate": "^1.0.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.0",
+    "tailwindcss": "^4.0.0"
+  }
+}
