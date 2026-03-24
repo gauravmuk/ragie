@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import facetConfigJson from "./facet-config.json" with { type: "json" };
+import { createTraceHandler, createSpanHandler, fetchPrompt, flushLangfuse } from "./langfuse-client.js";
 
 const TABLE_NAME = "documents";
 const QUERY_NAME = "match_documents";
@@ -209,34 +210,60 @@ function parseFacetRouterJson(text, facetConfig) {
   return { primary, confidence, reasoning };
 }
 
-async function routeFacetWithLlm(question, facetConfig, llm) {
+const RAG_ANSWER_FALLBACK = [
+  "You are a support assistant for JustCall docs.",
+  "Answer only using the provided context.",
+  "If the context is insufficient, clearly say you do not have enough information.",
+  "Cite supporting chunks inline like [#1], [#2].",
+  "You may use parent context [P1], [P2] for broader grounding, but final claims should cite child chunks when possible.",
+  "Do not cite any chunk number that is not in context.",
+  "",
+  "Question: {{question}}",
+  "",
+  "Context:",
+  "{{context}}",
+].join("\n");
+
+const FACET_ROUTER_FALLBACK = [
+  "You route a user question to exactly one knowledge-base facet.",
+  "Reply with ONLY a single JSON object. No markdown fences, no extra text.",
+  "",
+  "Facets:",
+  "{{facetLines}}",
+  "",
+  'If the question is ambiguous or could apply equally to multiple facets, choose "{{defaultFacet}}".',
+  "",
+  "Set confidence between 0 and 1. Use 0.75 or higher when the facet is clear from the question.",
+  "",
+  "JSON shape:",
+  '{"primary":"<facet_id>","confidence":0.85,"reasoning":"<one short sentence>"}',
+  "",
+  "User question: {{question}}",
+].join("\n");
+
+async function routeFacetWithLlm(question, facetConfig, llm, { callbacks } = {}) {
   const facetLines = facetConfig.facets
     .map((f) => `- "${f.id}": ${f.description}`)
     .join("\n");
   const defaultId = facetConfig.defaultFacet;
-  const prompt = [
-    "You route a user question to exactly one knowledge-base facet.",
-    "Reply with ONLY a single JSON object. No markdown fences, no extra text.",
-    "",
-    "Facets:",
-    facetLines,
-    "",
-    `If the question is ambiguous or could apply equally to multiple facets, choose "${defaultId}".`,
-    "",
-    "Set confidence between 0 and 1. Use 0.75 or higher when the facet is clear from the question.",
-    "",
-    "JSON shape:",
-    '{"primary":"<facet_id>","confidence":0.85,"reasoning":"<one short sentence>"}',
-    "",
-    `User question: ${JSON.stringify(question)}`,
-  ].join("\n");
 
-  const res = await llm.invoke(prompt);
+  const langfusePrompt = await fetchPrompt("facet-router");
+  const promptText = langfusePrompt
+    ? langfusePrompt.compile({ facetLines, defaultFacet: defaultId, question: JSON.stringify(question) })
+    : FACET_ROUTER_FALLBACK
+        .replace("{{facetLines}}", facetLines)
+        .replace("{{defaultFacet}}", defaultId)
+        .replace("{{question}}", JSON.stringify(question));
+
+  const invokeOpts = callbacks
+    ? { callbacks, metadata: langfusePrompt ? { langfusePrompt } : undefined }
+    : langfusePrompt ? { metadata: { langfusePrompt } } : {};
+  const res = await llm.invoke(promptText, invokeOpts);
   const text = typeof res.content === "string" ? res.content : JSON.stringify(res.content);
   return parseFacetRouterJson(text, facetConfig);
 }
 
-async function resolveRequestedFacet(question, facetConfig, chatModel) {
+async function resolveRequestedFacet(question, facetConfig, chatModel, { trace } = {}) {
   const minConf = Number(
     process.env.RAG_ROUTER_CONFIDENCE_MIN ?? facetConfig.router?.confidenceMin ?? 0.45
   );
@@ -256,7 +283,9 @@ async function resolveRequestedFacet(question, facetConfig, chatModel) {
   try {
     const routerModel = process.env.RAG_ROUTER_MODEL || chatModel;
     const routerLlm = makeChatLlm({ model: routerModel, temperature: 0 });
-    const routed = await routeFacetWithLlm(question, facetConfig, routerLlm);
+    const routerHandler = createSpanHandler(trace, { name: "facet-routing" });
+    const callbacks = routerHandler ? [routerHandler] : undefined;
+    const routed = await routeFacetWithLlm(question, facetConfig, routerLlm, { callbacks });
     if (routed.confidence >= minConf) {
       return { ...routed, source: "llm" };
     }
@@ -553,90 +582,165 @@ export async function querySystem(
     chatModel = CHAT_MODEL,
     temperature = 0,
     facetConfig: facetConfigOverride = null,
+    userId = undefined,
+    sessionId = undefined,
+    tags = [],
   } = {}
 ) {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error("GEMINI_API_KEY environment variable is required. Get one at https://aistudio.google.com");
   }
-  const facetConfig = facetConfigOverride ?? loadFacetConfig();
-  const rateLimiter = createRateLimiter();
-  const supabase = makeSupabaseClient();
-  const embeddings = new GeminiEmbeddings({
-    apiKey: process.env.GEMINI_API_KEY,
-    dimensions: 1536,
-  });
-  const vectorStore = new SupabaseVectorStore(embeddings, {
-    client: supabase,
-    tableName: TABLE_NAME,
-    queryName: QUERY_NAME,
+
+  // Initialize Langfuse trace for this query
+  const { trace } = createTraceHandler({
+    name: "rag-query",
+    userId,
+    sessionId,
+    tags: ["rag", `provider:${CHAT_PROVIDER}`, ...tags],
+    metadata: { model: chatModel, topK, temperature },
   });
 
-  // Run facet routing and initial retrieval in parallel
-  const queryTerms = extractQueryTerms(question);
-  const [facetRouter, semanticResults, lexicalDocs] = await Promise.all([
-    resolveRequestedFacet(question, facetConfig, chatModel),
-    vectorStore.similaritySearchWithScore(question, CANDIDATE_K, { chunkType: "child" }),
-    fetchLexicalCandidates(supabase, queryTerms),
-  ]);
+  try {
+    // Set trace input
+    if (trace) {
+      trace.update({ input: question });
+    }
 
-  const {
-    reranked,
-    parentDocs,
-    usedStructured,
-    requestedFacet,
-  } = await hybridRetrieveFromResults(semanticResults, lexicalDocs, vectorStore, supabase, question, queryTerms, topK, facetConfig, facetRouter.primary);
-  const docs = reranked.map((r) => r.doc);
+    const facetConfig = facetConfigOverride ?? loadFacetConfig();
+    const rateLimiter = createRateLimiter();
+    const supabase = makeSupabaseClient();
+    const embeddings = new GeminiEmbeddings({
+      apiKey: process.env.GEMINI_API_KEY,
+      dimensions: 1536,
+    });
+    const vectorStore = new SupabaseVectorStore(embeddings, {
+      client: supabase,
+      tableName: TABLE_NAME,
+      queryName: QUERY_NAME,
+    });
 
-  if (docs.length === 0) {
+    // Run facet routing and initial retrieval in parallel
+    const queryTerms = extractQueryTerms(question);
+
+    // Log retrieval as a span
+    const retrievalSpan = trace?.span({
+      name: "hybrid-retrieval",
+      input: { question, queryTerms, candidateK: CANDIDATE_K },
+    });
+
+    const [facetRouter, semanticResults, lexicalDocs] = await Promise.all([
+      resolveRequestedFacet(question, facetConfig, chatModel, { trace }),
+      vectorStore.similaritySearchWithScore(question, CANDIDATE_K, { chunkType: "child" }),
+      fetchLexicalCandidates(supabase, queryTerms),
+    ]);
+
+    const {
+      reranked,
+      parentDocs,
+      usedStructured,
+      requestedFacet,
+    } = await hybridRetrieveFromResults(semanticResults, lexicalDocs, vectorStore, supabase, question, queryTerms, topK, facetConfig, facetRouter.primary);
+    const docs = reranked.map((r) => r.doc);
+
+    if (retrievalSpan) {
+      retrievalSpan.end({
+        output: {
+          facet: requestedFacet,
+          facetSource: facetRouter.source,
+          docsRetrieved: docs.length,
+          usedStructured,
+        },
+      });
+    }
+
+    if (docs.length === 0) {
+      if (retrievalSpan) {
+        retrievalSpan.end({ output: { docsRetrieved: 0 } });
+      }
+      if (trace) {
+        trace.update({ output: { answer: "", noContext: true } });
+      }
+      await flushLangfuse();
+      return {
+        question,
+        queryTerms,
+        requestedFacet,
+        facetRouter,
+        usedStructured,
+        docs: [],
+        reranked,
+        parentDocs,
+        answer: "",
+        noContext: true,
+      };
+    }
+
+    const context = formatContext(docs, parentDocs);
+    const llm = makeChatLlm({ model: chatModel, temperature });
+
+    const langfusePrompt = await fetchPrompt("rag-answer");
+    const prompt = langfusePrompt
+      ? langfusePrompt.compile({ question, context })
+      : RAG_ANSWER_FALLBACK
+          .replace("{{question}}", question)
+          .replace("{{context}}", context);
+
+    // Create a span handler for the answer generation LLM call
+    const answerHandler = createSpanHandler(trace, { name: "answer-generation" });
+    const answerCallbacks = answerHandler ? [answerHandler] : undefined;
+    const answerInvokeOpts = {
+      ...(answerCallbacks ? { callbacks: answerCallbacks } : {}),
+      ...(langfusePrompt ? { metadata: { langfusePrompt } } : {}),
+    };
+
+    const response = await rateLimiter.call(() =>
+      llm.invoke(prompt, answerInvokeOpts)
+    );
+    const rawAnswer = typeof response.content === "string"
+      ? response.content
+      : JSON.stringify(response.content);
+    const answer = enforceCitationDiscipline(rawAnswer, docs);
+
+    // Update trace with final output
+    if (trace) {
+      trace.update({
+        output: { answer: answer.trim(), noContext: false },
+        metadata: {
+          model: chatModel,
+          topK,
+          temperature,
+          facet: requestedFacet,
+          facetSource: facetRouter.source,
+          docsRetrieved: docs.length,
+        },
+      });
+    }
+
+    await flushLangfuse();
+
     return {
       question,
       queryTerms,
       requestedFacet,
       facetRouter,
       usedStructured,
-      docs: [],
+      docs,
       reranked,
       parentDocs,
-      answer: "",
-      noContext: true,
+      answer: answer.trim(),
+      noContext: false,
     };
+  } catch (err) {
+    if (trace) {
+      trace.update({
+        output: { error: err.message },
+        level: "ERROR",
+        statusMessage: err.message,
+      });
+    }
+    await flushLangfuse();
+    throw err;
   }
-
-  const context = formatContext(docs, parentDocs);
-  const llm = makeChatLlm({ model: chatModel, temperature });
-
-  const prompt = [
-    "You are a support assistant for JustCall docs.",
-    "Answer only using the provided context.",
-    "If the context is insufficient, clearly say you do not have enough information.",
-    "Cite supporting chunks inline like [#1], [#2].",
-    "You may use parent context [P1], [P2] for broader grounding, but final claims should cite child chunks when possible.",
-    "Do not cite any chunk number that is not in context.",
-    "",
-    `Question: ${question}`,
-    "",
-    "Context:",
-    context,
-  ].join("\n");
-
-  const response = await rateLimiter.call(() => llm.invoke(prompt));
-  const rawAnswer = typeof response.content === "string"
-    ? response.content
-    : JSON.stringify(response.content);
-  const answer = enforceCitationDiscipline(rawAnswer, docs);
-
-  return {
-    question,
-    queryTerms,
-    requestedFacet,
-    facetRouter,
-    usedStructured,
-    docs,
-    reranked,
-    parentDocs,
-    answer: answer.trim(),
-    noContext: false,
-  };
 }
 
 function printQueryResult(result) {

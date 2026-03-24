@@ -19,8 +19,11 @@ export async function POST(request) {
     );
   }
 
+  const userId = typeof body?.userId === "string" ? body.userId.slice(0, 128) : undefined;
+  const sessionId = typeof body?.sessionId === "string" ? body.sessionId.slice(0, 128) : undefined;
+
   try {
-    const result = await querySystem(question.trim());
+    const result = await querySystem(question.trim(), { userId, sessionId });
 
     const sources = result.reranked.slice(0, 5).map((item) => ({
       title: item.doc.metadata?.title ?? "Untitled",

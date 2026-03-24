@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -11,6 +11,35 @@ import {
   CardContent,
 } from "@/components/ui/card";
 
+function getOrCreateId(key) {
+  if (typeof window === "undefined") return null;
+  const stored = localStorage.getItem(key);
+  if (stored) return stored;
+  const id = crypto.randomUUID();
+  localStorage.setItem(key, id);
+  return id;
+}
+
+function getOrCreateSessionId() {
+  if (typeof window === "undefined") return null;
+  const key = "justcall-help:sessionId";
+  const tsKey = "justcall-help:sessionTs";
+  const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+  const stored = localStorage.getItem(key);
+  const ts = Number(localStorage.getItem(tsKey) || 0);
+
+  if (stored && Date.now() - ts < SESSION_TTL_MS) {
+    localStorage.setItem(tsKey, String(Date.now()));
+    return stored;
+  }
+
+  const id = crypto.randomUUID();
+  localStorage.setItem(key, id);
+  localStorage.setItem(tsKey, String(Date.now()));
+  return id;
+}
+
 export default function Home() {
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState(null);
@@ -18,6 +47,8 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const inputRef = useRef(null);
+
+  const userId = useMemo(() => getOrCreateId("justcall-help:userId"), []);
 
   const isSafeUrl = useCallback((url) => {
     try {
@@ -38,10 +69,15 @@ export default function Home() {
     setSources([]);
 
     try {
+      const sessionId = getOrCreateSessionId();
       const res = await fetch("/api/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: question.trim() }),
+        body: JSON.stringify({
+          question: question.trim(),
+          userId,
+          sessionId,
+        }),
       });
 
       const data = await res.json();
