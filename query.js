@@ -628,10 +628,11 @@ export async function querySystem(
       input: { question, queryTerms, candidateK: CANDIDATE_K },
     });
 
-    const [facetRouter, semanticResults, lexicalDocs] = await Promise.all([
+    const [facetRouter, semanticResults, lexicalDocs, answerPromptResult] = await Promise.all([
       resolveRequestedFacet(question, facetConfig, chatModel, { trace }),
       vectorStore.similaritySearchWithScore(question, CANDIDATE_K, { chunkType: "child" }),
       fetchLexicalCandidates(supabase, queryTerms),
+      fetchPrompt("rag-answer"),
     ]);
 
     const {
@@ -660,7 +661,7 @@ export async function querySystem(
       if (trace) {
         trace.update({ output: { answer: "", noContext: true } });
       }
-      await flushLangfuse();
+      flushLangfuse();
       return {
         question,
         queryTerms,
@@ -678,7 +679,7 @@ export async function querySystem(
     const context = formatContext(docs, parentDocs);
     const llm = makeChatLlm({ model: chatModel, temperature });
 
-    const langfusePrompt = await fetchPrompt("rag-answer");
+    const langfusePrompt = answerPromptResult;
     const prompt = langfusePrompt
       ? langfusePrompt.compile({ question, context })
       : RAG_ANSWER_FALLBACK
@@ -716,7 +717,7 @@ export async function querySystem(
       });
     }
 
-    await flushLangfuse();
+    flushLangfuse();
 
     return {
       question,
@@ -738,7 +739,7 @@ export async function querySystem(
         statusMessage: err.message,
       });
     }
-    await flushLangfuse();
+    flushLangfuse();
     throw err;
   }
 }
