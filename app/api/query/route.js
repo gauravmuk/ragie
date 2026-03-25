@@ -25,11 +25,20 @@ export async function POST(request) {
   try {
     const result = await querySystem(question.trim(), { userId, sessionId });
 
-    const sources = result.reranked.slice(0, 5).map((item) => ({
-      title: item.doc.metadata?.title ?? "Untitled",
-      source: item.doc.metadata?.source ?? null,
-      facet: item.docFacet,
-    }));
+    const seenSources = new Set();
+    const sources = [];
+    for (const item of result.reranked) {
+      const source = item.doc.metadata?.source || null;
+      if (source && seenSources.has(source)) continue;
+      if (source) seenSources.add(source);
+
+      sources.push({
+        title: item.doc.metadata?.title ?? "Untitled",
+        source: source,
+        facet: item.docFacet,
+      });
+      if (sources.length >= 5) break;
+    }
 
     return Response.json({
       answer: result.answer,

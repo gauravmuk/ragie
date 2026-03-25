@@ -1,154 +1,120 @@
-# JustCall Help — RAG Search
+# JustCall Help — Production-Grade RAG Search
 
-> Intelligent question-answering over [JustCall](https://justcall.io) help documentation, powered by hybrid retrieval and LLM-generated answers with citations.
+> Intelligent, citation-backed question-answering over [JustCall](https://justcall.io) help documentation. Built with hybrid retrieval, hierarchical chunking, and LLM-powered answer generation.
 
 **Live:** [ragie-eight.vercel.app](https://ragie-eight.vercel.app/)
 
 ---
 
-## Architecture
+## 🚀 Key Features
+
+- **Hybrid Retrieval:** Combines semantic vector search (Gemini) with lexical BM25 search for superior accuracy.
+- **Hierarchical Chunking:** Uses a parent-child strategy to maintain broad context while performing precise retrieval.
+- **Facet-Aware Routing:** Intelligently routes queries to specific knowledge domains (e.g., Core Support, JustCall Email) using LLM classification.
+- **Deduplication & Diversity:** Implements database-level unique constraints and source-based reranking to ensure a diverse set of results without redundancy.
+- **Citation Discipline:** Enforces strict inline citations (`[#1]`, `[#2]`) to ensure answers are grounded in retrieved context.
+- **Observability:** Integrated with Langfuse for tracing retrieval pipelines and monitoring LLM performance.
+
+---
+
+## 🏗️ Architecture
 
 ```mermaid
-flowchart LR
-    subgraph Ingestion
-        A[help.justcall.io] -->|Cheerio scraper| B[Chunking]
-        B -->|Parent / Child| C[Gemini Embeddings]
-        C --> D[(Supabase pgvector)]
+flowchart TD
+    subgraph Ingestion Pipeline
+        A[help.justcall.io] --> B[Cheerio Scraper]
+        B --> C[Hierarchical Chunking]
+        C --> D[Gemini-001 Embeddings]
+        D --> E[(Supabase pgvector)]
     end
 
-    subgraph Query Pipeline
+    subgraph Query Engine
         Q[User Question] --> F{Facet Router}
         F --> G[Semantic Search]
         F --> H[BM25 Lexical Search]
         G & H --> I[Hybrid Score Fusion]
-        I --> J[Parent Expansion]
-        J --> K[LLM · Groq / Gemini]
-        K --> L[Cited Answer]
+        I --> J[Source Deduplication]
+        J --> K[Parent Context Expansion]
+        K --> L[LLM Generation]
+        L --> M[Cited Answer]
     end
-
-    D --- G
-    D --- H
 ```
 
-## Tech Stack
+### Retrieval Deep Dive
 
-| Layer | Technology |
-|-------|-----------|
-| Framework | Next.js 15 + React 19 |
-| UI | shadcn/ui + Tailwind CSS 4 |
-| LLM | Groq (Llama 3.3 70B) or Google Gemini |
-| Embeddings | Google Gemini |
-| Vector Store | Supabase (pgvector) |
-| Ingestion | Cheerio scraper + hierarchical chunking |
+| Stage | Mechanism | Purpose |
+|-------|-----------|---------|
+| **Facet Routing** | LLM-based classification | Narrows the search space to relevant document categories. |
+| **Semantic Search** | Vector similarity (Cosine) | Captures conceptual meaning even when keywords don't match. |
+| **Lexical Search** | BM25 over content tokens | Finds precise matches for technical terms and product names. |
+| **Hybrid Scoring** | Weighted Fusion + Intent Adjustment | Balanced ranking using semantic, lexical, and metadata signals. |
+| **Deduplication** | Source-level filtering | Ensures no single article dominates the results (max 2 chunks per source). |
 
 ---
 
-## How It Works
+## 🛠️ Tech Stack
 
-1. **Ingest** — Scrapes help articles from help.justcall.io, splits them into parent/child chunks, generates embeddings, and stores them in Supabase.
-2. **Query** — Runs semantic search, BM25 lexical search, and facet routing in parallel, then fuses scores to rank the best chunks.
-3. **Answer** — Top chunks are sent to the LLM with a system prompt that enforces citation discipline (`[#1]`, `[#2]`, etc.).
+- **Framework:** Next.js 15 (App Router) + React 19
+- **Styling:** Tailwind CSS 4 + shadcn/ui
+- **Embeddings:** Google Gemini (`text-embedding-004`)
+- **LLM:** Groq (Llama 3.3 70B) or Google Gemini 2.0 Flash
+- **Vector Store:** Supabase (PostgreSQL + pgvector)
+- **Local State:** SQLite (`better-sqlite3`) for ingestion progress tracking
+- **Observability:** Langfuse
 
-### Retrieval Pipeline
+---
 
-| Stage | Detail |
-|-------|--------|
-| Facet routing | LLM or keyword-based classification into facets (core, email) |
-| Semantic search | Vector similarity via Supabase `match_documents` |
-| Lexical search | BM25 scoring over extracted query terms |
-| Hybrid scoring | Weighted fusion — semantic (0.6), BM25 (0.4), intent signals, facet boost |
-| Parent expansion | Fetches parent chunks for broader context |
-| Citation enforcement | Ensures the answer cites retrieved sources |
+## ⚙️ Setup & Deployment
 
-## Getting Started
+### 1. Database Configuration
+Run the provided `setup.sql` in your Supabase SQL Editor to initialize the schema, enable `pgvector`, and create the necessary functions and indexes (including the deduplication index).
 
-### Prerequisites
-
-- Node.js 20+
-- A Supabase project with pgvector enabled
-- API keys for Gemini and/or Groq
-
-### Environment Variables
-
-Create a `.env` file:
+### 2. Environment Variables
+Create a `.env` file with the following keys:
 
 ```env
-GEMINI_API_KEY=           # Required — used for embeddings (and LLM if provider is gemini)
-SUPABASE_URL=             # Required — Supabase project URL
-SUPABASE_SERVICE_ROLE_KEY= # Required — Supabase service role key
-GROQ_API_KEY=             # Required when CHAT_PROVIDER=groq
+# AI Providers
+GEMINI_API_KEY=           # Required for embeddings and/or chat
+GROQ_API_KEY=             # Required if CHAT_PROVIDER=groq
+CHAT_PROVIDER=groq        # "groq" or "gemini"
 
-# Optional
-CHAT_PROVIDER=groq        # "groq" (default) or "gemini"
-GROQ_MODEL=llama-3.3-70b-versatile
-GEMINI_CHAT_MODEL=gemini-2.0-flash
-RAG_TOP_K=5               # Final results returned
-RAG_CANDIDATE_K=20        # Candidates before reranking
-RAG_DISABLE_LLM_ROUTER=0  # Set to 1 to use keyword routing only
+# Supabase
+SUPABASE_URL=             # Your project URL
+SUPABASE_SERVICE_ROLE_KEY= # Service role key for ingestion
+
+# Optional Tuning
+RAG_TOP_K=5               # Chunks to send to LLM
+RAG_CANDIDATE_K=20        # Candidates for hybrid reranking
+RAG_DISABLE_LLM_ROUTER=0  # Set to 1 for keyword-only routing
 ```
 
-### Install & Run
-
+### 3. Ingestion
 ```bash
 npm install
-npm run dev          # Start dev server on http://localhost:3000
+npm run ingest                # Incremental ingestion (skips unchanged articles)
+npm run ingest:reset-and-run  # Clear and re-ingest everything
 ```
 
-### Ingest Help Articles
-
+### 4. Running the App
 ```bash
-npm run ingest                # Ingest (resumes from last checkpoint)
-npm run ingest:reset-and-run  # Reset vector store and re-ingest everything
+npm run dev                   # Local development server
 ```
 
-### Evaluate RAG Quality
+---
 
+## 🛡️ Handling Duplication
+
+This repository handles duplication at three levels:
+1. **Scraping Level:** Uses a local SQLite `progress.db` to store checksums of scraped articles, skipping those that haven't changed.
+2. **Database Level:** A unique index in Supabase on `(metadata->>'source', md5(content))` prevents duplicate chunks from being stored.
+3. **Retrieval Level:** The `query.js` pipeline filters out redundant chunks from the same source to provide a more diverse set of citations to the LLM.
+
+---
+
+## 🧪 Evaluation & Quality
+
+Run the evaluation suite to measure retrieval accuracy and answer quality:
 ```bash
-npm run eval          # Run evaluation suite
-npm run eval:strict   # Fail on any check failure
+npm run eval         # Standard evaluation
+npm run eval:strict  # Fail on any check failure
 ```
-
-## API
-
-```
-POST /api/query
-Content-Type: application/json
-
-{ "question": "How do I set up call forwarding?" }
-```
-
-**Response:**
-
-```json
-{
-  "answer": "To set up call forwarding... [#1]",
-  "facet": "core",
-  "noContext": false,
-  "sources": [
-    { "title": "Call Forwarding Guide", "source": "https://help.justcall.io/...", "facet": "core" }
-  ]
-}
-```
-
-## Project Structure
-
-```
-app/
-  layout.jsx             # Root layout
-  page.jsx               # Search UI (client component)
-  api/query/route.js     # POST endpoint (60s timeout)
-components/ui/           # shadcn button, input, card
-query.js                 # Core RAG engine
-ingest.js                # Web scraper + chunking pipeline
-evals.js                 # Evaluation framework
-facet-config.json        # Facet routing configuration
-middleware.js            # Rate limiting (10 req/min per IP)
-gemini-embeddings.js     # Custom Gemini embeddings wrapper
-supabase-client.js       # Supabase connection factory
-rate-limiter.js          # Gemini API rate limiter
-progress-store.js        # SQLite ingestion progress tracking
-```
-
-## Deployment
-
-Deployed on **Vercel**. The app conditionally skips dotenv loading when the `VERCEL` environment variable is present. Set all required env vars in the Vercel project dashboard.

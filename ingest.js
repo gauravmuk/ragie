@@ -403,9 +403,12 @@ async function main() {
             doc.metadata = {
               ...doc.metadata,
               checksum,
+              contentHash: createHash("md5").update(doc.pageContent).digest("hex"),
             };
           }
 
+          // Use a transaction or single-batch insert if supported by the underlying client
+          // LangChain vectorStore.addDocuments usually does this in a single call.
           await vectorStore.addDocuments(docs);
 
           progressStore.upsertArticle({

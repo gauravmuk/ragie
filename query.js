@@ -243,7 +243,7 @@ const FACET_ROUTER_FALLBACK = [
 
 async function routeFacetWithLlm(question, facetConfig, llm, { callbacks } = {}) {
   const facetLines = facetConfig.facets
-    .map((f) => `- "${f.id}": ${f.description}`)
+    .map((f) => `- "${f.id}": ${f.description}\n  Query hints: ${f.queryHints?.join(", ") || "none"}`)
     .join("\n");
   const defaultId = facetConfig.defaultFacet;
 
@@ -376,6 +376,20 @@ function dedupeByChunkId(items) {
     if (seen.has(id)) continue;
     seen.add(id);
     out.push(item);
+  }
+  return out;
+}
+
+function dedupeBySource(items, maxPerSource = 2) {
+  const sourceCount = new Map();
+  const out = [];
+  for (const item of items) {
+    const source = item.doc.metadata?.source || "unknown";
+    const count = sourceCount.get(source) || 0;
+    if (count < maxPerSource) {
+      out.push(item);
+      sourceCount.set(source, count + 1);
+    }
   }
   return out;
 }
@@ -569,7 +583,11 @@ async function hybridRetrieveFromResults(childSemantic, lexicalDocs, vectorStore
   const sorted = dedupeByChunkId(
     rescored.sort((a, b) => b.hybridScore - a.hybridScore)
   );
-  const reranked = enforceFacetPriority(sorted, requestedFacet, topK);
+
+  // Diverisfy results by deduping source-level redundancy
+  const diversified = dedupeBySource(sorted, 2);
+
+  const reranked = enforceFacetPriority(diversified, requestedFacet, topK);
 
   const parentDocs = await fetchParentDocs(supabase, reranked);
   return { queryTerms, reranked, parentDocs, usedStructured: childSemantic.length > 0, requestedFacet };
