@@ -603,6 +603,7 @@ export async function querySystem(
     userId = undefined,
     sessionId = undefined,
     tags = [],
+    streaming = false,
   } = {}
 ) {
   if (!process.env.GEMINI_API_KEY) {
@@ -711,6 +712,60 @@ export async function querySystem(
       ...(answerCallbacks ? { callbacks: answerCallbacks } : {}),
       ...(langfusePrompt ? { metadata: { langfusePrompt } } : {}),
     };
+
+    if (streaming) {
+      const stream = await rateLimiter.call(() =>
+        llm.stream(prompt, answerInvokeOpts)
+      );
+
+      const searchResult = {
+        question,
+        queryTerms,
+        requestedFacet,
+        facetRouter,
+        usedStructured,
+        docs,
+        reranked,
+        parentDocs,
+        stream,
+        noContext: false,
+      };
+
+      // Wrap the stream to record the full answer in Langfuse when it completes
+      const originalStream = searchResult.stream;
+      const wrappedStream = (async function* () {
+        let fullAnswer = "";
+        for await (const chunk of originalStream) {
+          const content = typeof chunk.content === "string" ? chunk.content : JSON.stringify(chunk.content);
+          fullAnswer += content;
+          yield chunk;
+        }
+        const answerWithCitations = enforceCitationDiscipline(fullAnswer, docs);
+        const citationSuffix = answerWithCitations.slice(fullAnswer.length);
+        if (citationSuffix) {
+          yield { content: citationSuffix };
+          fullAnswer = answerWithCitations;
+        }
+
+        if (trace) {
+          trace.update({
+            output: { answer: fullAnswer.trim(), noContext: false },
+            metadata: {
+              model: chatModel,
+              topK,
+              temperature,
+              facet: requestedFacet,
+              facetSource: facetRouter.source,
+              docsRetrieved: docs.length,
+            },
+          });
+        }
+        flushLangfuse();
+      })();
+
+      searchResult.stream = wrappedStream;
+      return searchResult;
+    }
 
     const response = await rateLimiter.call(() =>
       llm.invoke(prompt, answerInvokeOpts)

@@ -23,7 +23,11 @@ export async function POST(request) {
   const sessionId = typeof body?.sessionId === "string" ? body.sessionId.slice(0, 128) : undefined;
 
   try {
-    const result = await querySystem(question.trim(), { userId, sessionId });
+    const result = await querySystem(question.trim(), {
+      userId,
+      sessionId,
+      streaming: true,
+    });
 
     const seenSources = new Set();
     const sources = [];
@@ -40,11 +44,41 @@ export async function POST(request) {
       if (sources.length >= 5) break;
     }
 
-    return Response.json({
-      answer: result.answer,
-      facet: result.requestedFacet,
-      noContext: result.noContext,
-      sources,
+    if (result.noContext) {
+      return Response.json({
+        answer: "",
+        facet: result.requestedFacet,
+        noContext: true,
+        sources: [],
+      });
+    }
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        // Send initial metadata as the first chunk
+        const metadata = {
+          facet: result.requestedFacet,
+          sources,
+          noContext: false,
+        };
+        controller.enqueue(encoder.encode(`__METADATA__:${JSON.stringify(metadata)}\n`));
+
+        for await (const chunk of result.stream) {
+          const content = typeof chunk.content === "string" ? chunk.content : JSON.stringify(chunk.content);
+          if (content) {
+            controller.enqueue(encoder.encode(content));
+          }
+        }
+        controller.close();
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Transfer-Encoding": "chunked",
+      },
     });
   } catch (err) {
     console.error("Query API error:", err.message, err.stack);

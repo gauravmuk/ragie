@@ -80,18 +80,51 @@ export default function Home() {
         }),
       });
 
-      const data = await res.json();
-
       if (!res.ok) {
+        const data = await res.json();
         throw new Error(data.error || "Something went wrong");
       }
 
-      if (data.noContext) {
-        setAnswer("No matching context found. Try rephrasing your question.");
-      } else {
-        setAnswer(data.answer);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulatedAnswer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        accumulatedAnswer += chunk;
+
+        const metadataMarker = "__METADATA__:";
+        const metadataEndIndex = accumulatedAnswer.indexOf("\n", accumulatedAnswer.indexOf(metadataMarker));
+        if (accumulatedAnswer.includes(metadataMarker) && metadataEndIndex === -1) {
+           // Wait for the metadata line to be complete
+           continue;
+        }
+
+        if (accumulatedAnswer.includes(metadataMarker)) {
+           const lines = accumulatedAnswer.split("\n");
+           const metadataLineIndex = lines.findIndex(l => l.startsWith(metadataMarker));
+           const metadataLine = lines[metadataLineIndex];
+           if (metadataLine) {
+              try {
+                const metadata = JSON.parse(metadataLine.slice(metadataMarker.length));
+                if (metadata.noContext) {
+                  setAnswer("No matching context found. Try rephrasing your question.");
+                  return;
+                }
+                setSources(metadata.sources || []);
+                // Remove metadata line from answer
+                lines.splice(metadataLineIndex, 1);
+                accumulatedAnswer = lines.join("\n");
+              } catch (e) {
+                console.error("Failed to parse metadata", e);
+              }
+           }
+        }
+        setAnswer(accumulatedAnswer);
       }
-      setSources(data.sources || []);
     } catch (err) {
       setError(err.message);
     } finally {
